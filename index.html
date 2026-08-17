@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bench // utils</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:        #0b0e12;
+    --panel:     #12161c;
+    --panel-2:   #171c23;
+    --line:      #232a33;
+    --amber:     #f2b84b;
+    --amber-dim: #8a6a2c;
+    --text:      #d7dde3;
+    --text-dim:  #7c8792;
+    --ok:        #6fbf8f;
+    --err:       #d9705f;
+  }
+  html,body{ background:var(--bg); }
+  body{ font-family:'IBM Plex Sans', sans-serif; color:var(--text); }
+  .mono{ font-family:'JetBrains Mono', monospace; }
+  ::selection{ background:var(--amber); color:#0b0e12; }
+  textarea, input, select { background:var(--panel-2); border:1px solid var(--line); color:var(--text); }
+  textarea:focus, input:focus, select:focus { outline:none; border-color:var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+  ::-webkit-scrollbar{ width:10px; height:10px; }
+  ::-webkit-scrollbar-track{ background:var(--panel); }
+  ::-webkit-scrollbar-thumb{ background:var(--line); border-radius:6px; }
+  ::-webkit-scrollbar-thumb:hover{ background:var(--amber-dim); }
+
+  .navbtn{ transition: background-color .12s ease, color .12s ease, border-color .12s ease; }
+  .navbtn[data-active="true"]{
+    background: rgba(242,184,75,0.08);
+    color: var(--amber);
+    border-left-color: var(--amber);
+  }
+  .navbtn:not([data-active="true"]):hover{ background: rgba(255,255,255,0.03); }
+
+  .led{ width:7px; height:7px; border-radius:999px; background:var(--text-dim); box-shadow: 0 0 0 rgba(0,0,0,0); }
+  .led[data-state="ok"]{ background:var(--ok); box-shadow:0 0 6px var(--ok); }
+  .led[data-state="err"]{ background:var(--err); box-shadow:0 0 6px var(--err); }
+  .led[data-state="idle"]{ background:var(--text-dim); box-shadow:none; }
+
+  .btn{
+    font-family:'JetBrains Mono', monospace;
+    font-size:12px; letter-spacing:.03em;
+    padding:6px 12px; border:1px solid var(--line);
+    color:var(--text-dim); background:var(--panel-2);
+    transition: all .12s ease;
+  }
+  .btn:hover{ border-color:var(--amber-dim); color:var(--amber); }
+  .btn-primary{ border-color:var(--amber-dim); color:var(--amber); }
+  .btn-primary:hover{ background: rgba(242,184,75,0.1); border-color:var(--amber); }
+
+  .caret::after{
+    content:'▍'; color:var(--amber); animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink{ 50%{ opacity:0; } }
+
+  textarea{ resize:vertical; }
+
+  @media (prefers-reduced-motion: reduce){
+    .caret::after{ animation:none; }
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Status bar -->
+  <div class="mono text-[11px] text-[var(--text-dim)] border-b border-[var(--line)] px-4 py-1.5 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-2">
+      <span class="led" data-state="ok"></span>
+      <span>LOCAL // NO NETWORK CALLS // NOTHING LEAVES THIS TAB // ONLY USE FOR EDUCATIONAL PURPOSES</span>
+    </div>
+    <div id="clock">—</div>
+  </div>
+
+  <div class="flex flex-1 min-h-0">
+
+    <!-- Sidebar -->
+    <nav class="w-56 shrink-0 border-r border-[var(--line)] bg-[var(--panel)] flex flex-col">
+      <div class="px-4 py-4 border-b border-[var(--line)]">
+        <div class="mono text-[var(--amber)] text-sm font-semibold tracking-tight">bench<span class="caret"></span></div>
+        <div class="text-[11px] text-[var(--text-dim)] mt-0.5">offline utility belt</div>
+      </div>
+      <div id="nav" class="flex-1 overflow-y-auto py-2"></div>
+      <div class="px-4 py-3 border-t border-[var(--line)] text-[10px] text-[var(--text-dim)] mono leading-relaxed">
+        single file · vanilla js<br>tailwind cdn · no build step
+      </div>
+    </nav>
+
+    <!-- Main -->
+    <main class="flex-1 min-w-0 overflow-y-auto">
+      <div id="views" class="max-w-5xl mx-auto p-6"></div>
+    </main>
+
+  </div>
+
+<script>
+// ---------------------------------------------------------------
+// Tool registry
+// ---------------------------------------------------------------
+const TOOLS = [
+  { id:'json',      label:'JSON Format',      group:'DATA' },
+  { id:'json-csv',  label:'JSON ⇄ CSV',        group:'DATA' },
+  { id:'base64',    label:'Base64',            group:'ENCODE' },
+  { id:'urlenc',    label:'URL Encode',        group:'ENCODE' },
+  { id:'jwt',       label:'JWT Decode',        group:'ENCODE' },
+  { id:'hash',      label:'Hash Generator',    group:'CRYPTO' },
+  { id:'uuid',      label:'UUID Generator',    group:'CRYPTO' },
+  { id:'time',      label:'Timestamp',         group:'MISC' },
+  { id:'case',      label:'Text Case',         group:'MISC' },
+];
+
+let active = 'json';
+
+function buildNav(){
+  const nav = document.getElementById('nav');
+  const groups = [...new Set(TOOLS.map(t=>t.group))];
+  nav.innerHTML = groups.map(g => `
+    <div class="mb-3">
+      <div class="px-4 py-1 text-[10px] mono text-[var(--text-dim)] tracking-widest">${g}</div>
+      ${TOOLS.filter(t=>t.group===g).map(t => `
+        <button
+          class="navbtn w-full text-left px-4 py-1.5 mono text-[13px] border-l-2 border-transparent text-[var(--text-dim)]"
+          data-tool="${t.id}" data-active="${t.id===active}"
+          onclick="setActive('${t.id}')">${t.label}</button>
+      `).join('')}
+    </div>
+  `).join('');
+}
+
+function setActive(id){
+  active = id;
+  document.querySelectorAll('.navbtn').forEach(b=>{
+    b.setAttribute('data-active', b.dataset.tool===id ? 'true' : 'false');
+  });
+  render();
+}
+
+function view(html){ document.getElementById('views').innerHTML = html; }
+
+function toolHeader(title, desc){
+  return `
+    <div class="mb-5">
+      <h1 class="mono text-lg text-[var(--text)] font-semibold">${title}</h1>
+      <p class="text-sm text-[var(--text-dim)] mt-1">${desc}</p>
+    </div>`;
+}
+
+function copyBtn(targetId, label='COPY'){
+  return `<button class="btn" onclick="copyFrom('${targetId}', this)">${label}</button>`;
+}
+
+async function copyFrom(id, btn){
+  const el = document.getElementById(id);
+  const text = ('value' in el) ? el.value : el.textContent;
+  try{
+    await navigator.clipboard.writeText(text);
+    const orig = btn.textContent;
+    btn.textContent = 'COPIED';
+    setTimeout(()=> btn.textContent = orig, 900);
+  }catch(e){ /* clipboard may be unavailable, fail silently */ }
+}
+
+function setLed(id, state){
+  const el = document.getElementById(id);
+  if(el) el.setAttribute('data-state', state);
+}
+
+// ---------------------------------------------------------------
+// Render dispatcher
+// ---------------------------------------------------------------
+function render(){
+  ({
+    json: renderJson,
+    'json-csv': renderJsonCsv,
+    base64: renderBase64,
+    urlenc: renderUrlEnc,
+    jwt: renderJwt,
+    hash: renderHash,
+    uuid: renderUuid,
+    time: renderTime,
+    case: renderCase,
+  })[active]();
+}
+
+// ---------------------------------------------------------------
+// 1. JSON Format
+// ---------------------------------------------------------------
+function renderJson(){
+  view(`
+    ${toolHeader('JSON Format', 'Pretty-print, minify, and validate JSON.')}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]">INPUT</label>
+          <div class="flex items-center gap-1.5">
+            <span class="led" id="json-led" data-state="idle"></span>
+            <span id="json-status" class="mono text-[11px] text-[var(--text-dim)]">idle</span>
+          </div>
+        </div>
+        <textarea id="json-in" rows="18" spellcheck="false"
+          class="mono text-[13px] w-full p-3 rounded-none" placeholder='{"paste":"json here"}'
+          oninput="doJson()"></textarea>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]">OUTPUT</label>
+          <div class="flex gap-2">
+            <button class="btn" onclick="jsonAction('pretty')">PRETTY</button>
+            <button class="btn" onclick="jsonAction('minify')">MINIFY</button>
+            <button class="btn" onclick="jsonAction('sort')">SORT KEYS</button>
+            ${copyBtn('json-out')}
+          </div>
+        </div>
+        <textarea id="json-out" rows="18" spellcheck="false" readonly
+          class="mono text-[13px] w-full p-3 rounded-none"></textarea>
+      </div>
+    </div>
+  `);
+  window._jsonMode = 'pretty';
+}
+
+function jsonAction(mode){ window._jsonMode = mode; doJson(); }
+
+function doJson(){
+  const raw = document.getElementById('json-in').value;
+  const out = document.getElementById('json-out');
+  const status = document.getElementById('json-status');
+  if(!raw.trim()){ out.value=''; status.textContent='idle'; setLed('json-led','idle'); return; }
+  try{
+    let data = JSON.parse(raw);
+    const mode = window._jsonMode || 'pretty';
+    if(mode === 'sort') data = sortKeysDeep(data);
+    out.value = mode === 'minify' ? JSON.stringify(data) : JSON.stringify(data, null, 2);
+    status.textContent = 'valid json';
+    setLed('json-led','ok');
+  }catch(e){
+    out.value = '';
+    status.textContent = e.message;
+    setLed('json-led','err');
+  }
+}
+
+function sortKeysDeep(val){
+  if(Array.isArray(val)) return val.map(sortKeysDeep);
+  if(val && typeof val === 'object'){
+    const out = {};
+    Object.keys(val).sort().forEach(k => out[k] = sortKeysDeep(val[k]));
+    return out;
+  }
+  return val;
+}
+
+// ---------------------------------------------------------------
+// 2. JSON <-> CSV
+// ---------------------------------------------------------------
+function renderJsonCsv(){
+  view(`
+    ${toolHeader('JSON ⇄ CSV', 'Converts a flat JSON array of objects to CSV, or CSV back to JSON.')}
+    <div class="flex gap-2 mb-4">
+      <button class="btn btn-primary" id="jc-tab-j2c" onclick="jcSetDir('j2c')">JSON → CSV</button>
+      <button class="btn" id="jc-tab-c2j" onclick="jcSetDir('c2j')">CSV → JSON</button>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]" id="jc-in-label">INPUT (JSON ARRAY)</label>
+          <span id="jc-status" class="mono text-[11px] text-[var(--text-dim)]"></span>
+        </div>
+        <textarea id="jc-in" rows="18" spellcheck="false" class="mono text-[13px] w-full p-3"
+          placeholder='[{"name":"Sage","role":"IT Specialist 2"}]' oninput="doJsonCsv()"></textarea>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]" id="jc-out-label">OUTPUT (CSV)</label>
+          ${copyBtn('jc-out')}
+        </div>
+        <textarea id="jc-out" rows="18" spellcheck="false" readonly class="mono text-[13px] w-full p-3"></textarea>
+      </div>
+    </div>
+  `);
+  window._jcDir = 'j2c';
+  jcSetDir('j2c');
+}
+
+function jcSetDir(dir){
+  window._jcDir = dir;
+  document.getElementById('jc-tab-j2c').className = 'btn' + (dir==='j2c' ? ' btn-primary' : '');
+  document.getElementById('jc-tab-c2j').className = 'btn' + (dir==='c2j' ? ' btn-primary' : '');
+  document.getElementById('jc-in-label').textContent = dir==='j2c' ? 'INPUT (JSON ARRAY)' : 'INPUT (CSV)';
+  document.getElementById('jc-out-label').textContent = dir==='j2c' ? 'OUTPUT (CSV)' : 'OUTPUT (JSON)';
+  document.getElementById('jc-in').placeholder = dir==='j2c'
+    ? '[{"name":"Sage","role":"IT Specialist 2"}]'
+    : 'name,role\nSage,IT Specialist 2';
+  doJsonCsv();
+}
+
+function doJsonCsv(){
+  const raw = document.getElementById('jc-in').value;
+  const out = document.getElementById('jc-out');
+  const status = document.getElementById('jc-status');
+  if(!raw.trim()){ out.value=''; status.textContent=''; return; }
+  try{
+    if(window._jcDir === 'j2c'){
+      const data = JSON.parse(raw);
+      out.value = jsonToCsv(Array.isArray(data) ? data : [data]);
+    } else {
+      out.value = JSON.stringify(csvToJson(raw), null, 2);
+    }
+    status.textContent = 'ok';
+    status.style.color = 'var(--ok)';
+  }catch(e){
+    out.value = '';
+    status.textContent = e.message;
+    status.style.color = 'var(--err)';
+  }
+}
+
+function jsonToCsv(rows){
+  if(!rows.length) return '';
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  const esc = v => {
+    if(v === null || v === undefined) return '';
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const lines = [cols.join(',')];
+  for(const row of rows) lines.push(cols.map(c => esc(row[c])).join(','));
+  return lines.join('\n');
+}
+
+function csvToJson(text){
+  const rows = parseCsv(text.trim());
+  if(!rows.length) return [];
+  const header = rows[0];
+  return rows.slice(1).map(r => {
+    const obj = {};
+    header.forEach((h,i) => obj[h] = r[i] !== undefined ? r[i] : '');
+    return obj;
+  });
+}
+
+// minimal RFC4180-ish CSV parser (handles quoted fields, commas, newlines)
+function parseCsv(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for(let i=0; i<text.length; i++){
+    const c = text[i], next = text[i+1];
+    if(inQuotes){
+      if(c === '"' && next === '"'){ field += '"'; i++; }
+      else if(c === '"'){ inQuotes = false; }
+      else field += c;
+    } else {
+      if(c === '"') inQuotes = true;
+      else if(c === ','){ row.push(field); field=''; }
+      else if(c === '\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+      else if(c === '\r'){ /* skip */ }
+      else field += c;
+    }
+  }
+  row.push(field); rows.push(row);
+  return rows.filter(r => !(r.length===1 && r[0]===''));
+}
+
+// ---------------------------------------------------------------
+// 3. Base64
+// ---------------------------------------------------------------
+function renderBase64(){
+  view(`
+    ${toolHeader('Base64', 'Encode or decode text using Base64 (UTF-8 safe).')}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]">TEXT</label>
+        </div>
+        <textarea id="b64-text" rows="14" spellcheck="false" class="mono text-[13px] w-full p-3"
+          oninput="b64Encode()"></textarea>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]">BASE64</label>
+          ${copyBtn('b64-enc')}
+        </div>
+        <textarea id="b64-enc" rows="14" spellcheck="false" class="mono text-[13px] w-full p-3"
+          oninput="b64Decode()"></textarea>
+      </div>
+    </div>
+    <div id="b64-err" class="mono text-[11px] text-[var(--err)] mt-2"></div>
+  `);
+}
+
+function b64Encode(){
+  const t = document.getElementById('b64-text').value;
+  try{
+    document.getElementById('b64-enc').value = btoa(unescape(encodeURIComponent(t)));
+    document.getElementById('b64-err').textContent = '';
+  }catch(e){ document.getElementById('b64-err').textContent = e.message; }
+}
+function b64Decode(){
+  const t = document.getElementById('b64-enc').value;
+  try{
+    document.getElementById('b64-text').value = decodeURIComponent(escape(atob(t)));
+    document.getElementById('b64-err').textContent = '';
+  }catch(e){ document.getElementById('b64-err').textContent = 'invalid base64'; }
+}
+
+// ---------------------------------------------------------------
+// 4. URL encode/decode
+// ---------------------------------------------------------------
+function renderUrlEnc(){
+  view(`
+    ${toolHeader('URL Encode', 'Percent-encode or decode a string / URI component.')}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">DECODED</label>
+        <textarea id="url-plain" rows="14" spellcheck="false" class="mono text-[13px] w-full p-3"
+          oninput="urlEncode()"></textarea>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <label class="mono text-xs text-[var(--text-dim)]">ENCODED</label>
+          ${copyBtn('url-enc')}
+        </div>
+        <textarea id="url-enc" rows="14" spellcheck="false" class="mono text-[13px] w-full p-3"
+          oninput="urlDecode()"></textarea>
+      </div>
+    </div>
+  `);
+}
+function urlEncode(){
+  document.getElementById('url-enc').value = encodeURIComponent(document.getElementById('url-plain').value);
+}
+function urlDecode(){
+  try{ document.getElementById('url-plain').value = decodeURIComponent(document.getElementById('url-enc').value); }
+  catch(e){ /* leave as-is on partial input */ }
+}
+
+// ---------------------------------------------------------------
+// 5. JWT decode
+// ---------------------------------------------------------------
+function renderJwt(){
+  view(`
+    ${toolHeader('JWT Decode', 'Decodes header and payload. Does not verify the signature.')}
+    <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">TOKEN</label>
+    <textarea id="jwt-in" rows="4" spellcheck="false" class="mono text-[13px] w-full p-3 mb-4"
+      placeholder="eyJhbGciOi..." oninput="doJwt()"></textarea>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">HEADER</label>
+        <pre id="jwt-header" class="mono text-[13px] w-full p-3 bg-[var(--panel-2)] border border-[var(--line)] min-h-[8rem] overflow-x-auto"></pre>
+      </div>
+      <div>
+        <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">PAYLOAD</label>
+        <pre id="jwt-payload" class="mono text-[13px] w-full p-3 bg-[var(--panel-2)] border border-[var(--line)] min-h-[8rem] overflow-x-auto"></pre>
+      </div>
+    </div>
+    <div id="jwt-err" class="mono text-[11px] text-[var(--err)] mt-2"></div>
+  `);
+}
+
+function b64urlDecode(str){
+  str = str.replace(/-/g,'+').replace(/_/g,'/');
+  while(str.length % 4) str += '=';
+  return decodeURIComponent(escape(atob(str)));
+}
+
+function doJwt(){
+  const token = document.getElementById('jwt-in').value.trim();
+  const err = document.getElementById('jwt-err');
+  const hEl = document.getElementById('jwt-header');
+  const pEl = document.getElementById('jwt-payload');
+  if(!token){ hEl.textContent=''; pEl.textContent=''; err.textContent=''; return; }
+  const parts = token.split('.');
+  if(parts.length < 2){ err.textContent = 'not a valid JWT (expected 3 dot-separated parts)'; hEl.textContent=''; pEl.textContent=''; return; }
+  try{
+    hEl.textContent = JSON.stringify(JSON.parse(b64urlDecode(parts[0])), null, 2);
+    pEl.textContent = JSON.stringify(JSON.parse(b64urlDecode(parts[1])), null, 2);
+    err.textContent = '';
+  }catch(e){
+    err.textContent = 'could not decode: ' + e.message;
+  }
+}
+
+// ---------------------------------------------------------------
+// 6. Hash generator
+// ---------------------------------------------------------------
+function renderHash(){
+  view(`
+    ${toolHeader('Hash Generator', "SHA-1 / SHA-256 / SHA-384 / SHA-512 via the browser's native crypto API.")}
+    <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">INPUT TEXT</label>
+    <textarea id="hash-in" rows="6" spellcheck="false" class="mono text-[13px] w-full p-3 mb-4" oninput="doHash()"></textarea>
+    <div class="space-y-2" id="hash-out"></div>
+  `);
+  doHash();
+}
+
+async function sha(algo, text){
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest(algo, enc);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function doHash(){
+  const text = document.getElementById('hash-in').value;
+  const algos = [['SHA-1','SHA-1'],['SHA-256','SHA-256'],['SHA-384','SHA-384'],['SHA-512','SHA-512']];
+  const results = await Promise.all(algos.map(async ([label, algo]) => [label, text ? await sha(algo, text) : '']));
+  document.getElementById('hash-out').innerHTML = results.map(([label, hex], i) => `
+    <div class="flex items-center gap-3 bg-[var(--panel-2)] border border-[var(--line)] px-3 py-2">
+      <span class="mono text-xs text-[var(--amber)] w-20 shrink-0">${label}</span>
+      <input id="hash-${i}" readonly class="mono text-[13px] flex-1 bg-transparent border-0 focus:ring-0 focus:border-0" value="${hex}">
+      ${copyBtn('hash-'+i, 'COPY')}
+    </div>
+  `).join('');
+}
+
+// ---------------------------------------------------------------
+// 7. UUID generator
+// ---------------------------------------------------------------
+function renderUuid(){
+  view(`
+    ${toolHeader('UUID Generator', 'Generates RFC 4122 v4 UUIDs using crypto.randomUUID().')}
+    <div class="flex items-center gap-2 mb-4">
+      <label class="mono text-xs text-[var(--text-dim)]">COUNT</label>
+      <input id="uuid-count" type="number" min="1" max="200" value="5" class="mono text-[13px] w-20 px-2 py-1">
+      <button class="btn btn-primary" onclick="doUuid()">GENERATE</button>
+      ${copyBtn('uuid-out')}
+    </div>
+    <textarea id="uuid-out" rows="14" spellcheck="false" readonly class="mono text-[13px] w-full p-3"></textarea>
+  `);
+  doUuid();
+}
+function doUuid(){
+  const n = Math.max(1, Math.min(200, parseInt(document.getElementById('uuid-count').value) || 1));
+  const list = Array.from({length:n}, () => crypto.randomUUID());
+  document.getElementById('uuid-out').value = list.join('\n');
+}
+
+// ---------------------------------------------------------------
+// 8. Timestamp converter
+// ---------------------------------------------------------------
+function renderTime(){
+  const now = Date.now();
+  view(`
+    ${toolHeader('Timestamp', 'Convert between Unix time and human-readable / ISO 8601 dates.')}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">UNIX (SECONDS)</label>
+        <input id="ts-unix" type="text" class="mono text-[13px] w-full p-3" value="${Math.floor(now/1000)}" oninput="tsFromUnix()">
+      </div>
+      <div>
+        <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">ISO 8601 / LOCAL INPUT</label>
+        <input id="ts-iso" type="text" class="mono text-[13px] w-full p-3" oninput="tsFromIso()">
+      </div>
+    </div>
+    <div class="mt-4 space-y-1 mono text-[13px] text-[var(--text-dim)]" id="ts-derived"></div>
+    <button class="btn mt-4" onclick="tsNow()">USE CURRENT TIME</button>
+  `);
+  tsFromUnix();
+}
+function tsRenderDerived(ms){
+  const d = new Date(ms);
+  document.getElementById('ts-derived').innerHTML = `
+    <div>UTC &nbsp; ${d.toUTCString()}</div>
+    <div>LOCAL &nbsp; ${d.toString()}</div>
+    <div>ISO &nbsp; ${d.toISOString()}</div>
+  `;
+}
+function tsFromUnix(){
+  const v = document.getElementById('ts-unix').value.trim();
+  if(!/^-?\d+$/.test(v)) return;
+  const ms = parseInt(v) * 1000;
+  document.getElementById('ts-iso').value = new Date(ms).toISOString();
+  tsRenderDerived(ms);
+}
+function tsFromIso(){
+  const v = document.getElementById('ts-iso').value.trim();
+  const ms = Date.parse(v);
+  if(isNaN(ms)) return;
+  document.getElementById('ts-unix').value = Math.floor(ms/1000);
+  tsRenderDerived(ms);
+}
+function tsNow(){
+  document.getElementById('ts-unix').value = Math.floor(Date.now()/1000);
+  tsFromUnix();
+}
+
+// ---------------------------------------------------------------
+// 9. Text case converter
+// ---------------------------------------------------------------
+function renderCase(){
+  view(`
+    ${toolHeader('Text Case', 'Convert text between common case styles.')}
+    <label class="mono text-xs text-[var(--text-dim)] block mb-1.5">INPUT</label>
+    <textarea id="case-in" rows="6" spellcheck="false" class="mono text-[13px] w-full p-3 mb-4" oninput="doCase()"></textarea>
+    <div id="case-out" class="space-y-2"></div>
+  `);
+  doCase();
+}
+function toWords(s){
+  return s
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_\-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(w => w.toLowerCase());
+}
+function doCase(){
+  const text = document.getElementById('case-in').value;
+  const words = text ? toWords(text) : [];
+  const cases = {
+    'UPPERCASE': text.toUpperCase(),
+    'lowercase': text.toLowerCase(),
+    'Title Case': words.map(w => w[0]?.toUpperCase()+w.slice(1)).join(' '),
+    'camelCase': words.map((w,i) => i===0 ? w : w[0]?.toUpperCase()+w.slice(1)).join(''),
+    'PascalCase': words.map(w => w[0]?.toUpperCase()+w.slice(1)).join(''),
+    'snake_case': words.join('_'),
+    'kebab-case': words.join('-'),
+    'CONSTANT_CASE': words.join('_').toUpperCase(),
+  };
+  document.getElementById('case-out').innerHTML = Object.entries(cases).map(([label, val], i) => `
+    <div class="flex items-center gap-3 bg-[var(--panel-2)] border border-[var(--line)] px-3 py-2">
+      <span class="mono text-xs text-[var(--amber)] w-28 shrink-0">${label}</span>
+      <input id="case-${i}" readonly class="mono text-[13px] flex-1 bg-transparent border-0 focus:ring-0 focus:border-0" value="${val.replace(/"/g,'&quot;')}">
+      ${copyBtn('case-'+i, 'COPY')}
+    </div>
+  `).join('');
+}
+
+// ---------------------------------------------------------------
+// Clock + boot
+// ---------------------------------------------------------------
+function tickClock(){
+  document.getElementById('clock').textContent = new Date().toLocaleString(undefined, {
+    hour12:false, year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit'
+  });
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+buildNav();
+render();
+</script>
+</body>
+</html>
